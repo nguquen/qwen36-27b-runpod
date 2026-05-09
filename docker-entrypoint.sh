@@ -78,6 +78,12 @@ case "$CMD" in
         REASONING_PARSER_FLAG=""
         [[ -n "${REASONING_PARSER:-}" ]] && REASONING_PARSER_FLAG="--reasoning-parser ${REASONING_PARSER}"
 
+        # --- Optional default chat-template kwargs (e.g. preserve_thinking) -
+        CHAT_TEMPLATE_KWARGS_FLAG=()
+        if [[ -n "${CHAT_TEMPLATE_KWARGS:-}" ]]; then
+            CHAT_TEMPLATE_KWARGS_FLAG=(--default-chat-template-kwargs "${CHAT_TEMPLATE_KWARGS}")
+        fi
+
         # --- Optional OTel endpoints ----------------------------------------
         OTEL_TRACES_FLAG=""
         [[ -n "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ]] && OTEL_TRACES_FLAG="--otlp-traces-endpoint ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
@@ -117,6 +123,7 @@ case "$CMD" in
             --tool-call-parser qwen3_coder \
             --trust-remote-code \
             ${REASONING_PARSER_FLAG} \
+            "${CHAT_TEMPLATE_KWARGS_FLAG[@]}" \
             ${OTEL_TRACES_FLAG} \
             ${OTEL_METRICS_FLAG} \
             ${OTEL_LOGS_FLAG} \

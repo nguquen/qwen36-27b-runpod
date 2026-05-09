@@ -58,6 +58,7 @@ ENV REPETITION_PENALTY=1.0
 ENV REASONING_PARSER=qwen3
 ENV MODEL_DOWNLOAD=0
 ENV PUBLIC_PORT=8000
+ENV CHAT_TEMPLATE_KWARGS={"preserve_thinking":true}
 
 # Caddy listens on PUBLIC_PORT (RunPod LB attaches here).
 # vLLM listens on PORT (internal, 127.0.0.1 only — proxied by caddy).
