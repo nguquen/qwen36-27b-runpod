@@ -24,8 +24,8 @@ export TENSOR_PARALLEL
 # vars (any other value) are left untouched.
 if (( TENSOR_PARALLEL == 1 )); then
     if [[ "${MAX_MODEL_LEN:-}" == "200000" ]]; then
-        echo "Single-GPU mode: clamping MAX_MODEL_LEN 200000 -> 65536"
-        MAX_MODEL_LEN=65536
+        echo "Single-GPU mode: clamping MAX_MODEL_LEN 200000 -> 32768"
+        MAX_MODEL_LEN=32768
     fi
     if [[ "${GPU_MEMORY_UTIL:-}" == "0.92" ]]; then
         echo "Single-GPU mode: raising GPU_MEMORY_UTIL 0.92 -> 0.95"

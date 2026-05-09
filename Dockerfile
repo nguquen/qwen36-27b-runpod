@@ -17,16 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pip wheel
 
-# vLLM pinned to post-#39931 commit wheel (4f2af1a, 2026-05-05) to get
-# TurboQuant hybrid-model support (Qwen3.6 = attention + Mamba/GDN).
-# v0.20.1 was tagged the day BEFORE #39931 merged, so any tagged release
-# < 0.21 lacks the hybrid path. Switch back to a stable pin once v0.20.2/0.21
-# ships with the merge included.
-ARG VLLM_COMMIT=4f2af1a7c03aae2b3227dd7e69d726104d44a711
-ARG VLLM_VERSION=0.20.2rc1.dev25+g4f2af1a7c
+# vLLM pinned to the latest stable tag. The post-#39931 commit wheel
+# (0.20.2rc1.dev25+g4f2af1a7c) was tried to enable TurboQuant on Qwen3.6's
+# hybrid (attention + Mamba/GDN) architecture but it OOMs at cold start on
+# 1x4090 24 GB even with conservative settings. Stay on stable until a
+# tagged release ships the merge AND the cold-start regression is resolved.
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-        --extra-index-url "https://wheels.vllm.ai/${VLLM_COMMIT}/" \
-        --pre "vllm==${VLLM_VERSION}" \
+        'vllm==0.20.1' \
         auto-round \
         hf_transfer \
         huggingface_hub
@@ -73,7 +70,6 @@ ENV MODEL_DOWNLOAD=0
 ENV PUBLIC_PORT=8000
 ENV CHAT_TEMPLATE_KWARGS={\"preserve_thinking\":true}
 ENV CHAT_TEMPLATE_PATH=/etc/vllm/chat_template.jinja
-ENV KV_CACHE_DTYPE=turboquant_k8v4
 
 # Caddy listens on PUBLIC_PORT (RunPod LB attaches here).
 # vLLM listens on PORT (internal, 127.0.0.1 only — proxied by caddy).
