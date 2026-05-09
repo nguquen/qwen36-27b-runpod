@@ -145,7 +145,7 @@ case "$CMD" in
             --tensor-parallel-size "$TENSOR_PARALLEL" \
             --max-model-len "$MAX_MODEL_LEN" \
             --max-num-seqs "$MAX_NUM_SEQS" \
-            --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-8192}" \
+            --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-4128}" \
             --gpu-memory-utilization "$GPU_MEMORY_UTIL" \
             --disable-custom-all-reduce \
             --enable-auto-tool-choice \
