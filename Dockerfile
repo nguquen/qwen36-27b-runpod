@@ -63,7 +63,7 @@ ENV REPETITION_PENALTY=1.0
 ENV REASONING_PARSER=qwen3
 ENV MODEL_DOWNLOAD=0
 ENV PUBLIC_PORT=8000
-ENV CHAT_TEMPLATE_KWARGS={"preserve_thinking":true}
+ENV CHAT_TEMPLATE_KWARGS={\"preserve_thinking\":true}
 ENV CHAT_TEMPLATE_PATH=/etc/vllm/chat_template.jinja
 
 # Caddy listens on PUBLIC_PORT (RunPod LB attaches here).
