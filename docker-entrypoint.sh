@@ -38,6 +38,26 @@ fi
 export MAX_MODEL_LEN
 export GPU_MEMORY_UTIL
 
+# --- Auto-scale MAX_NUM_BATCHED_TOKENS by GPU count ----------------------
+# vLLM reserves activation buffers sized to --max-num-batched-tokens during
+# the cold-start profile_run step. On 1x4090 24 GB the safe ceiling is 4128
+# (matches vLLM's CUDA-graph capture endpoint 4096+32). With TP>=2 the model
+# weights shard across GPUs, freeing per-GPU memory, so we can scale up:
+#   TP=2  -> 8192   (~2x faster prefill on long prompts)
+#   TP>=4 -> 16384  (best for long-prompt agents)
+# Only auto-bump when the value still matches the baked sentinel "4128"
+# (or is unset); operator overrides via -e / RunPod env vars are untouched.
+if (( TENSOR_PARALLEL >= 2 )) && [[ "${MAX_NUM_BATCHED_TOKENS:-4128}" == "4128" ]]; then
+    if (( TENSOR_PARALLEL == 2 )); then
+        MAX_NUM_BATCHED_TOKENS=8192
+    else
+        MAX_NUM_BATCHED_TOKENS=16384
+    fi
+    echo "Multi-GPU mode (TP=${TENSOR_PARALLEL}): raising MAX_NUM_BATCHED_TOKENS 4128 -> ${MAX_NUM_BATCHED_TOKENS}"
+fi
+: "${MAX_NUM_BATCHED_TOKENS:=4128}"
+export MAX_NUM_BATCHED_TOKENS
+
 # --- Determine visible GPU indices ----------------------------------------
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     CUDA_VISIBLE_DEVICES=""
@@ -128,6 +148,7 @@ case "$CMD" in
         echo "  Tensor parallelism : ${TENSOR_PARALLEL}"
         echo "  Max model len      : ${MAX_MODEL_LEN}"
         echo "  Max num seqs       : ${MAX_NUM_SEQS}"
+        echo "  Max batched tokens : ${MAX_NUM_BATCHED_TOKENS}"
         echo "  GPU memory util    : ${GPU_MEMORY_UTIL}"
         echo "  CUDA devices       : ${CUDA_VISIBLE_DEVICES}"
         echo "  Generation config  : ${GEN_CONFIG}"
@@ -145,7 +166,7 @@ case "$CMD" in
             --tensor-parallel-size "$TENSOR_PARALLEL" \
             --max-model-len "$MAX_MODEL_LEN" \
             --max-num-seqs "$MAX_NUM_SEQS" \
-            --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-4128}" \
+            --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
             --gpu-memory-utilization "$GPU_MEMORY_UTIL" \
             --disable-custom-all-reduce \
             --enable-auto-tool-choice \
