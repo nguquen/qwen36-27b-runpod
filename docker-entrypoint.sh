@@ -100,6 +100,19 @@ case "$CMD" in
             CHAT_TEMPLATE_KWARGS_FLAG=(--default-chat-template-kwargs "${CHAT_TEMPLATE_KWARGS}")
         fi
 
+        # --- Optional override chat template (fixes multi-system, etc.) -----
+        # Set CHAT_TEMPLATE_PATH=/path/to/template.jinja to override the
+        # template bundled with the model. Empty string falls back to the
+        # model's bundled template. The image bakes a default pointing at
+        # the vendored froggeric v9 template under /etc/vllm.
+        CHAT_TEMPLATE_FLAG=()
+        if [[ -n "${CHAT_TEMPLATE_PATH:-}" && -f "${CHAT_TEMPLATE_PATH}" ]]; then
+            CHAT_TEMPLATE_FLAG=(--chat-template "${CHAT_TEMPLATE_PATH}")
+            echo "Using chat template: ${CHAT_TEMPLATE_PATH}"
+        elif [[ -n "${CHAT_TEMPLATE_PATH:-}" ]]; then
+            echo "WARNING: CHAT_TEMPLATE_PATH=${CHAT_TEMPLATE_PATH} not found; using model's bundled template" >&2
+        fi
+
         # --- Optional OTel endpoints ----------------------------------------
         OTEL_TRACES_FLAG=""
         [[ -n "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ]] && OTEL_TRACES_FLAG="--otlp-traces-endpoint ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
@@ -140,6 +153,7 @@ case "$CMD" in
             --trust-remote-code \
             ${REASONING_PARSER_FLAG} \
             "${CHAT_TEMPLATE_KWARGS_FLAG[@]}" \
+            "${CHAT_TEMPLATE_FLAG[@]}" \
             ${OTEL_TRACES_FLAG} \
             ${OTEL_METRICS_FLAG} \
             ${OTEL_LOGS_FLAG} \

@@ -34,6 +34,10 @@ RUN curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_
 
 COPY Caddyfile /etc/caddy/Caddyfile
 
+# --- Vendored chat template (fixes multi-system, developer role, etc.) ----
+RUN mkdir -p /etc/vllm
+COPY chat-templates/chat_template-v9.jinja /etc/vllm/chat_template.jinja
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
@@ -59,6 +63,7 @@ ENV REASONING_PARSER=qwen3
 ENV MODEL_DOWNLOAD=0
 ENV PUBLIC_PORT=8000
 ENV CHAT_TEMPLATE_KWARGS={"preserve_thinking":true}
+ENV CHAT_TEMPLATE_PATH=/etc/vllm/chat_template.jinja
 
 # Caddy listens on PUBLIC_PORT (RunPod LB attaches here).
 # vLLM listens on PORT (internal, 127.0.0.1 only — proxied by caddy).
