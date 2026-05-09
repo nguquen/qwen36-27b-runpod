@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pip wheel
 
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-        'vllm==0.19.1' \
+        'vllm==0.20.1' \
         auto-round \
         hf_transfer \
         huggingface_hub
@@ -53,6 +53,7 @@ ENV SERVED_MODEL_NAME=qwen3.6-27b
 ENV MAX_MODEL_LEN=200000
 ENV MAX_NUM_SEQS=3
 ENV GPU_MEMORY_UTIL=0.92
+ENV KV_CACHE_DTYPE=turboquant_k8v4
 ENV TEMPERATURE=0.6
 ENV TOP_P=0.95
 ENV TOP_K=20
