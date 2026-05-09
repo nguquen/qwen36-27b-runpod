@@ -11,14 +11,24 @@
 
 :{$PUBLIC_PORT:8000} {
 	# RunPod load balancer health probe.
-	# Maps to vLLM's /health: 200 when the engine is ready,
-	# 204 (initializing) while vLLM is still booting so the LB
-	# holds traffic instead of marking the worker failed.
+	#
+	# Probes vLLM's /v1/models instead of /health because /health only
+	# reports "engine subprocess is alive" — it returns 200 while the
+	# engine is still loading weights, running profile_run, or capturing
+	# CUDA graphs, which causes the LB to hand traffic to a worker that
+	# 500s the first request. /v1/models is only registered after the
+	# OpenAI server's init_app_state completes, so a 200 there means the
+	# model is actually loaded and ready to serve.
+	#
+	# 4xx covers the "FastAPI up but model registry empty" window;
+	# 5xx covers engine errors after the model is loaded.
+	# handle_errors below catches the connection-refused case (caddy
+	# starts before vLLM binds :1234) and folds it into the same 204.
 	handle /ping {
 		reverse_proxy 127.0.0.1:{$PORT:1234} {
-			rewrite /health
-			@down status 5xx
-			handle_response @down {
+			rewrite /v1/models
+			@notready status 4xx 5xx
+			handle_response @notready {
 				respond "initializing" 204
 			}
 		}
@@ -34,6 +44,19 @@
 				read_timeout 1h
 				write_timeout 1h
 			}
+		}
+	}
+
+	# Upstream-unreachable window during cold start: caddy comes up
+	# before vLLM binds :1234, so reverse_proxy can't connect and
+	# Caddy generates a 502 directly (handle_response only matches
+	# upstream responses, not Caddy-generated errors). Convert /ping
+	# 502s into 204 so the LB sees "initializing" instead of "failed".
+	# Other paths get the upstream error verbatim.
+	handle_errors {
+		@ping_down expression `{http.request.uri.path} == "/ping"`
+		handle @ping_down {
+			respond "initializing" 204
 		}
 	}
 }

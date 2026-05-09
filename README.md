@@ -156,7 +156,7 @@ TP=2 beats TP=1 by ~1.5x on dual 3090s. Memory-bandwidth savings from splitting 
 
 The image bundles a Caddy sidecar that exposes `:8000` with:
 
-- `GET /ping` — returns **200** when vLLM is ready, **204** while it's still initializing (so the RunPod LB holds traffic instead of marking the worker failed).
+- `GET /ping` — returns **200** only when vLLM has finished loading the model (probes upstream `/v1/models`, not `/health` — see below), **204** while it's still initializing (so the RunPod LB holds traffic instead of marking the worker failed).
 - Everything else (`/v1/*`, `/metrics`, `/tokenize`, …) — reverse-proxied to vLLM on `127.0.0.1:1234` with response buffering disabled, so SSE token streams flush per chunk.
 
 vLLM still binds to `1234` internally; nothing else changed for bare-metal users.
@@ -164,7 +164,7 @@ vLLM still binds to `1234` internally; nothing else changed for bare-metal users
 ### Architecture
 
 ```
-[RunPod LB] ──:8000──► [caddy] ──/ping──► 200 if upstream /health=200, else 204
+[RunPod LB] ──:8000──► [caddy] ──/ping──► 200 if upstream /v1/models=200, else 204
                           │
                           └──/* (incl. /v1/*) ──► [vLLM :1234 on 127.0.0.1]
 ```
@@ -258,6 +258,7 @@ On `RTX 4090` with weights on a Network Volume in the same DC: roughly **90–15
 - **Spec-decode silently ignores** `min_p` and `logit_bias` per-request params.
 - **Deprecation warnings about `Qwen2VLImageProcessorFast` / `use_fast`** are upstream-transformers noise; ignore.
 - **CUDA graph mode downgrades** to `PIECEWISE` under spec-decode (FlashInfer limitation) — automatic and expected.
+- **Readiness probe is `/v1/models`, not `/health`** — vLLM's `/health` endpoint returns `200` as soon as the engine subprocess is alive, which is **before** weights finish loading, before `profile_run` reserves activation buffers, and before CUDA-graph capture finishes. The Caddy `/ping` shim probes `/v1/models` instead because that route is only registered after `init_app_state` completes (i.e. the model is actually ready to serve). 4xx (FastAPI up but model registry empty), 5xx (engine errors), and connection-refused (Caddy starts before vLLM binds `:1234`) all map to `204` so the LB queues instead of routing traffic to a worker that would 500 the first request.
 - **Chat template fixes** — the image ships a vendored copy of [froggeric's v9 chat template](https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates) at `/etc/vllm/chat_template.jinja` (passed as `--chat-template`). It fixes the stock Qwen3.6 template's hard `System message must be at the beginning.` assertion (clients like LangChain/Codex CLI routinely send multiple system messages), accepts the `developer` role, handles `</thinking>` hallucinations, and avoids a no-user-query crash. Set `CHAT_TEMPLATE_PATH=` (empty) to fall back to the model-bundled template. See [`chat-templates/README.md`](chat-templates/README.md).
 - **TurboQuant KV cache** — currently disabled. The image was briefly bumped to a per-commit vllm wheel (`0.20.2rc1.dev25+g4f2af1a7c`, post PR #39931 which fixes TurboQuant on hybrid attention+Mamba/GDN models like Qwen3.6) with `KV_CACHE_DTYPE=turboquant_k8v4` baked in, but that wheel OOMs at cold start on 1×4090 24 GB even with conservative settings. The image is back on stable `vllm==0.20.1` + fp8 KV; the `KV_CACHE_DTYPE` env knob and `--kv-cache-dtype` plumbing are kept so a future stable release shipping #39931 can re-enable TurboQuant by setting `KV_CACHE_DTYPE=turboquant_k8v4`. With fp8, the single-GPU `MAX_MODEL_LEN` clamp lands at 32K instead of 64K.
 
