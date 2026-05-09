@@ -25,8 +25,18 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages \
 
 RUN mkdir -p /data/models /data/logs
 
+# --- Caddy: /ping shim + SSE-friendly reverse proxy for RunPod LB ---------
+ARG CADDY_VERSION=2.8.4
+RUN curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" \
+        | tar -xz -C /usr/local/bin caddy \
+    && chmod +x /usr/local/bin/caddy \
+    && mkdir -p /etc/caddy
+
+COPY Caddyfile /etc/caddy/Caddyfile
+
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
 
 COPY scripts/ /usr/local/bin/scripts/
 ENV PATH="/usr/local/bin/scripts:${PATH}"
@@ -47,6 +57,11 @@ ENV PRESENCE_PENALTY=0
 ENV REPETITION_PENALTY=1.0
 ENV REASONING_PARSER=qwen3
 ENV MODEL_DOWNLOAD=0
+ENV PUBLIC_PORT=8000
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# Caddy listens on PUBLIC_PORT (RunPod LB attaches here).
+# vLLM listens on PORT (internal, 127.0.0.1 only — proxied by caddy).
+EXPOSE 8000
+
+ENTRYPOINT ["/usr/local/bin/runpod-entrypoint.sh"]
 CMD ["serve"]

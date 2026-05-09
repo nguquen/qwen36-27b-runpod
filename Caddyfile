@@ -1,0 +1,39 @@
+{
+	auto_https off
+	admin off
+	persist_config off
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}
+
+:{$PUBLIC_PORT:8000} {
+	# RunPod load balancer health probe.
+	# Maps to vLLM's /health: 200 when the engine is ready,
+	# 204 (initializing) while vLLM is still booting so the LB
+	# holds traffic instead of marking the worker failed.
+	handle /ping {
+		reverse_proxy 127.0.0.1:{$PORT:1234} {
+			rewrite /health
+			@down status 5xx
+			handle_response @down {
+				respond "initializing" 204
+			}
+		}
+	}
+
+	# Pass-through for everything else: /v1/*, /metrics, /tokenize, etc.
+	# flush_interval -1 disables response buffering so SSE token
+	# streams from /v1/chat/completions reach the client immediately.
+	handle {
+		reverse_proxy 127.0.0.1:{$PORT:1234} {
+			flush_interval -1
+			transport http {
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+}

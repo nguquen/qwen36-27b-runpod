@@ -29,7 +29,8 @@ services:
       - ./models:/data/models
       - ./logs:/data/logs
     ports:
-      - "1234:1234"
+      - "1234:1234"   # vLLM OpenAI API (direct, bypasses caddy)
+      - "8000:8000"   # caddy: /ping + same OpenAI API surface as RunPod LB
     deploy:
       resources:
         reservations:
