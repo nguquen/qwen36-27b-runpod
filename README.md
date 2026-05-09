@@ -202,12 +202,13 @@ RunPod console → **Serverless → New Endpoint → Import from GitHub**:
 
 **Environment variables:**
 
-| Variable         | Recommended                                                        | Notes                                                                                          |
-| ---------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `MODEL_DOWNLOAD` | `0`                                                                | Volume is pre-populated. Set `1` to self-heal on a fresh volume (adds ~60–120s to cold start). |
-| `MAX_NUM_SEQS`   | `3`                                                                | Conservative; raise for higher throughput if memory allows.                                    |
-| `MAX_MODEL_LEN`  | `48000` (4090) / `96000` (A6000 24G usable) / `200000` (A6000 48G) | Auto-defaults to `48000` on single-GPU; override explicitly when you have headroom.            |
-| `HF_TOKEN`       | _(empty)_                                                          | Only needed if you swap to a gated model repo.                                                 |
+| Variable          | Recommended                                        | Notes                                                                                                                                           |
+| ----------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MODEL_DOWNLOAD`  | `0`                                                | Volume is pre-populated. Set `1` to self-heal on a fresh volume (adds ~60–120s to cold start).                                                  |
+| `MAX_NUM_SEQS`    | `3`                                                | Conservative; raise for higher throughput if memory allows.                                                                                     |
+| `MAX_MODEL_LEN`   | `32768` (4090, auto) / `65536`–`96000` (A6000 48G) | `runpod-entrypoint.sh` auto-clamps to `32768` on single GPU when the upstream image default (`200000`) is detected. Set explicitly to override. |
+| `GPU_MEMORY_UTIL` | `0.95` (auto on single GPU)                        | Auto-raised from upstream `0.92` → `0.95` on single GPU. Lower to `0.93` if you OOM at boot with vision or longer context.                      |
+| `HF_TOKEN`        | _(empty)_                                          | Only needed if you swap to a gated model repo.                                                                                                  |
 
 ### Step 3 — Test
 
