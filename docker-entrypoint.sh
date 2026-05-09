@@ -14,7 +14,23 @@ fi
 export TENSOR_PARALLEL
 
 # --- Adjust defaults based on GPU count -----------------------------------
+# The Dockerfile bakes the multi-GPU defaults (MAX_MODEL_LEN=200000,
+# GPU_MEMORY_UTIL=0.92) into the image as ENV, which means a plain
+# `:=` lazy default never fires (the var is set, just to the wrong
+# value for a single 24 GB card — vLLM refuses to start with "KV cache
+# is needed ... larger than available"). So when we detect TP=1 AND
+# the values still match the baked image defaults, actively clamp them
+# to safe single-GPU values. Operator overrides via `-e` / RunPod env
+# vars (any other value) are left untouched.
 if (( TENSOR_PARALLEL == 1 )); then
+    if [[ "${MAX_MODEL_LEN:-}" == "200000" ]]; then
+        echo "Single-GPU mode: clamping MAX_MODEL_LEN 200000 -> 32768"
+        MAX_MODEL_LEN=32768
+    fi
+    if [[ "${GPU_MEMORY_UTIL:-}" == "0.92" ]]; then
+        echo "Single-GPU mode: raising GPU_MEMORY_UTIL 0.92 -> 0.95"
+        GPU_MEMORY_UTIL=0.95
+    fi
     : "${MAX_MODEL_LEN:=48000}"
     : "${GPU_MEMORY_UTIL:=0.95}"
     echo "Single-GPU mode: MAX_MODEL_LEN=${MAX_MODEL_LEN}, GPU_MEMORY_UTIL=${GPU_MEMORY_UTIL}"

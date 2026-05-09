@@ -11,28 +11,6 @@
 
 set -euo pipefail
 
-# --- Single-GPU memory clamp ---------------------------------------------
-# Upstream Dockerfile bakes MAX_MODEL_LEN=200000 and GPU_MEMORY_UTIL=0.92,
-# which defeats docker-entrypoint.sh's `:=` lazy defaults (the vars are
-# set, not unset). On a single 24 GB card those numbers cause vLLM to
-# refuse to start ("KV cache is needed ... larger than available").
-#
-# When we detect exactly one GPU AND the values still match the upstream
-# image defaults (i.e. the operator hasn't explicitly overridden them via
-# RunPod endpoint env vars), clamp to safe single-GPU values. The 32K /
-# 0.95 combo fits an RTX 4090 (24 GB) with MTP spec-decode headroom.
-GPU_COUNT="$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)"
-if [[ "$GPU_COUNT" == "1" ]]; then
-	if [[ "${MAX_MODEL_LEN:-}" == "200000" ]]; then
-		echo "[runpod-entrypoint] single GPU detected; clamping MAX_MODEL_LEN 200000 -> 32768"
-		export MAX_MODEL_LEN=32768
-	fi
-	if [[ "${GPU_MEMORY_UTIL:-}" == "0.92" ]]; then
-		echo "[runpod-entrypoint] single GPU detected; raising GPU_MEMORY_UTIL 0.92 -> 0.95"
-		export GPU_MEMORY_UTIL=0.95
-	fi
-fi
-
 CADDY_PID=""
 VLLM_PID=""
 
