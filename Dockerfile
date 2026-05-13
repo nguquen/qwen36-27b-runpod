@@ -17,13 +17,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pip wheel
 
-# vLLM pinned to the latest stable tag. The post-#39931 commit wheel
-# (0.20.2rc1.dev25+g4f2af1a7c) was tried to enable TurboQuant on Qwen3.6's
-# hybrid (attention + Mamba/GDN) architecture but it OOMs at cold start on
-# 1x4090 24 GB even with conservative settings. Stay on stable until a
-# tagged release ships the merge AND the cold-start regression is resolved.
+# TRIAL BRANCH: vllm 0.21.0rc2.
+# 0.21.0rc2 is the first tagged release that contains PR #39931 (merge commit
+# 4f2af1a7c), which fixes TurboQuant startup on hybrid (attention + Mamba/GDN)
+# models like Qwen3.6. It also bundles ~250 other commits over v0.20.1
+# including #35520 (ModelRunner V2 hybrid support), #42070 (GDN nested
+# torch.compile in cudagraph capture), #41617 (causal_conv1d IMA on long
+# sequences), and #40961 (preserve max_seq_len in ubatch metadata during
+# cudagraph capture) — all on the Mamba/GDN path Qwen3.6 uses.
+#
+# OPEN RISK: the surgical post-#39931 wheel (0.20.2rc1.dev25+g4f2af1a7c) cold-
+# start OOM'd on 1x4090 24 GB even with fp8 KV and a 32K clamp. Whether the
+# rc2 bundle materially changes peak profile_run memory is unknown without a
+# real-hardware run. Roll back via KV_CACHE_DTYPE=fp8 if k8v4 OOMs.
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-        'vllm==0.20.1' \
+        'vllm==0.21.0rc2' \
         auto-round \
         hf_transfer \
         huggingface_hub
@@ -70,6 +78,12 @@ ENV MODEL_DOWNLOAD=0
 ENV PUBLIC_PORT=8000
 ENV CHAT_TEMPLATE_KWARGS={\"preserve_thinking\":true}
 ENV CHAT_TEMPLATE_PATH=/etc/vllm/chat_template.jinja
+
+# TRIAL BRANCH: re-enable TurboQuant k8v4 KV cache (8-bit K, 4-bit V packed).
+# k8v4 stores ~65 B/token vs fp8 ~85 B/token, so the single-GPU MAX_MODEL_LEN
+# clamp in docker-entrypoint.sh lifts from 32768 -> 65536 when this is active.
+# Override with `-e KV_CACHE_DTYPE=fp8` to fall back to stable behavior.
+ENV KV_CACHE_DTYPE=turboquant_k8v4
 
 # Caddy listens on PUBLIC_PORT (RunPod LB attaches here).
 # vLLM listens on PORT (internal, 127.0.0.1 only — proxied by caddy).

@@ -22,10 +22,19 @@ export TENSOR_PARALLEL
 # the values still match the baked image defaults, actively clamp them
 # to safe single-GPU values. Operator overrides via `-e` / RunPod env
 # vars (any other value) are left untouched.
+#
+# Single-GPU context ceiling depends on KV cache dtype: TurboQuant k8v4
+# packs to ~65 B/token (8-bit K, 4-bit V) vs fp8 ~85 B/token, so k8v4 fits
+# ~2x more context in the same KV pool. Mirror that in the clamp ceiling.
+if [[ "${KV_CACHE_DTYPE:-fp8}" == "turboquant_k8v4" ]]; then
+    SINGLE_GPU_CTX_CAP=65536
+else
+    SINGLE_GPU_CTX_CAP=32768
+fi
 if (( TENSOR_PARALLEL == 1 )); then
     if [[ "${MAX_MODEL_LEN:-}" == "200000" ]]; then
-        echo "Single-GPU mode: clamping MAX_MODEL_LEN 200000 -> 32768"
-        MAX_MODEL_LEN=32768
+        echo "Single-GPU mode (KV=${KV_CACHE_DTYPE:-fp8}): clamping MAX_MODEL_LEN 200000 -> ${SINGLE_GPU_CTX_CAP}"
+        MAX_MODEL_LEN=$SINGLE_GPU_CTX_CAP
     fi
     if [[ "${GPU_MEMORY_UTIL:-}" == "0.92" ]]; then
         echo "Single-GPU mode: raising GPU_MEMORY_UTIL 0.92 -> 0.95"
