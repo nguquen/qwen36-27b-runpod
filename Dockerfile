@@ -26,11 +26,19 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-insta
 # sequences), and #40961 (preserve max_seq_len in ubatch metadata during
 # cudagraph capture) — all on the Mamba/GDN path Qwen3.6 uses.
 #
+# NOT ON PyPI: vllm rc tags don't get uploaded to PyPI (only stable releases
+# do). Pull the per-commit wheel from vllm's hosted index instead. The default
+# vllm/ subdir at the commit root serves the cu130-built wheel
+# (vllm-0.21.0rc2-cp38-abi3-manylinux_2_24_x86_64.whl), which matches our
+# CUDA 13.2 base image. cu129/ has an alternate +cu129 local-tag wheel.
+#
 # OPEN RISK: the surgical post-#39931 wheel (0.20.2rc1.dev25+g4f2af1a7c) cold-
 # start OOM'd on 1x4090 24 GB even with fp8 KV and a 32K clamp. Whether the
 # rc2 bundle materially changes peak profile_run memory is unknown without a
 # real-hardware run. Roll back via KV_CACHE_DTYPE=fp8 if k8v4 OOMs.
+ARG VLLM_COMMIT=135453b715589014dbe1054ba63819acc1878eb6
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        --extra-index-url "https://wheels.vllm.ai/${VLLM_COMMIT}/" \
         'vllm==0.21.0rc2' \
         auto-round \
         hf_transfer \
