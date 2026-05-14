@@ -23,21 +23,49 @@ export TENSOR_PARALLEL
 # to safe single-GPU values. Operator overrides via `-e` / RunPod env
 # vars (any other value) are left untouched.
 #
-# Single-GPU context ceiling depends on KV cache dtype: TurboQuant k8v4
-# packs to ~65 B/token (8-bit K, 4-bit V) vs fp8 ~85 B/token, so k8v4 fits
-# ~2x more context in the same KV pool. Mirror that in the clamp ceiling.
+# Single-GPU context ceiling depends on KV cache dtype. TurboQuant variants
+# (PR #39931, in vllm 0.21.0rc2+) compress KV beyond fp8's 2x; caps below
+# are derived from the per-variant compression ratio relative to the
+# real-hardware validated k8v4 baseline on 1x4090 24 GB.
 #
-# k8v4 cap = 57344 (7 * 8192 = 56K). Real-hardware run on 1x4090 24 GB
-# with vllm 0.21.0rc2 + MTP spec-decode (3 draft tokens) + MAX_NUM_SEQS=3
-# at GPU_MEMORY_UTIL=0.95 showed vllm's KV planner computed an effective
-# max of 59136 tokens. 57344 leaves ~3% margin for block-allocation
-# variance across cold starts; still 75% more context than the fp8 32K
-# path, which is the whole point of TurboQuant. Override via MAX_MODEL_LEN.
-if [[ "${KV_CACHE_DTYPE:-fp8}" == "turboquant_k8v4" ]]; then
-    SINGLE_GPU_CTX_CAP=57344
-else
-    SINGLE_GPU_CTX_CAP=32768
-fi
+# Calibration anchor: k8v4 at 57344 was validated on 1x4090 24 GB with vllm
+# 0.21.0rc2 + MTP spec-decode (3 draft tokens) + MAX_NUM_SEQS=3 +
+# GPU_MEMORY_UTIL=0.95. vllm's KV planner reported 59136 as the absolute
+# ceiling; 57344 (7*8192) leaves ~3% margin for block-alloc variance.
+#
+# Other variants extrapolated by compression ratio (vs fp16 baseline),
+# rounded down to multiples of 8192 with extra safety margin because
+# (a) we haven't validated them on real hardware yet, (b) 4-bit and below
+# variants add per-block metadata (scales, rotation hints) that the simple
+# ratio model doesn't capture, and (c) Lloyd-Max keys with norm-correction
+# may have slightly different runtime memory profile.
+#
+#     dtype                 compr.  theoretical  baked   PPL      notes
+#     ------------------    ------  -----------  ------  ------   --------
+#     fp8                   2.0x    32K          32768   0%       default
+#     turboquant_k8v4       2.6x    ~57K         57344   +1.17%   validated
+#     turboquant_4bit_nc    3.8x    ~84K         73728   +2.71%   est. 12%
+#     turboquant_k3v4_nc    3.5x    ~77K         65536   +10.63%  dominated
+#     turboquant_3bit_nc    4.9x    ~108K        81920   +20.59%  big PPL
+#
+# Operator can override per-endpoint via MAX_MODEL_LEN env var.
+case "${KV_CACHE_DTYPE:-fp8}" in
+    turboquant_k8v4)
+        SINGLE_GPU_CTX_CAP=57344
+        ;;
+    turboquant_4bit_nc)
+        SINGLE_GPU_CTX_CAP=73728
+        ;;
+    turboquant_k3v4_nc)
+        SINGLE_GPU_CTX_CAP=65536
+        ;;
+    turboquant_3bit_nc)
+        SINGLE_GPU_CTX_CAP=81920
+        ;;
+    *)
+        SINGLE_GPU_CTX_CAP=32768
+        ;;
+esac
 if (( TENSOR_PARALLEL == 1 )); then
     if [[ "${MAX_MODEL_LEN:-}" == "200000" ]]; then
         echo "Single-GPU mode (KV=${KV_CACHE_DTYPE:-fp8}): clamping MAX_MODEL_LEN 200000 -> ${SINGLE_GPU_CTX_CAP}"
