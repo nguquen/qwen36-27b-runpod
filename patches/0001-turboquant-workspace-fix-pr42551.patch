@@ -1,0 +1,223 @@
+From: vllm-project PR #42551
+Subject: [Bugfix][V1][TurboQuant] Fix workspace AssertionError on first decode (#42544)
+
+Vendored copy of https://github.com/vllm-project/vllm/pull/42551.diff
+(stripped of the new test file `tests/v1/worker/test_workspace.py` since
+we don't need it at runtime; runtime patch is identical to the PR).
+
+Applies cleanly to vllm 0.21.0rc2 (commit 135453b715589014dbe1054ba63819acc1878eb6).
+Drop this file once a vllm release containing PR #42551 is pinned in the Dockerfile.
+
+Why: TurboQuant decode attention asserts on the very first inference request
+when warmup never lands a decode-shape forward through the TQ backend (e.g.
+Qwen3.6 where only 16 of 64 layers go through TQ). `lock_workspace()` runs
+at end of warmup with the workspace still sized at 0 MB, and
+`_decode_attention` immediately trips:
+
+    AssertionError: Workspace is locked but allocation from
+    'turboquant_attn.py:879:_decode_attention' requires 0.76 MB,
+    current size is 0.00 MB. Workspace growth is not allowed after locking.
+
+Fix (verbatim from the PR, two commits squashed):
+  1. `WorkspaceManager.try_get_simultaneous` + `torch.empty` fallback in
+     `_decode_attention` — same contract as `get_simultaneous` except
+     returns None (instead of raising) when workspace is locked
+     undersized. Steady-state hot path unchanged when workspace fits.
+  2. Pre-reserve decode scratch buffers in `TurboQuantAttentionImpl.__init__`
+     sized from `max_num_seqs * (1 + num_speculative_tokens)` so
+     `lock_workspace()` snapshots a workspace large enough.
+
+diff --git a/vllm/v1/attention/backends/turboquant_attn.py b/vllm/v1/attention/backends/turboquant_attn.py
+index 53684b4360f7..73b441f40097 100644
+--- a/vllm/v1/attention/backends/turboquant_attn.py
++++ b/vllm/v1/attention/backends/turboquant_attn.py
+@@ -295,6 +295,46 @@ def __init__(
+             vllm_config.attention_config.tq_max_kv_splits_for_cuda_graph
+         )
+ 
++        # Pre-reserve decode scratch buffers so `lock_workspace()` (called
++        # at end of warmup) snapshots a workspace large enough for the
++        # steady-state decode shape. Without this, models whose warmup
++        # path never lands a decode forward through the TQ backend (e.g.
++        # dense + hybrid attention) leave the workspace locked at 0 MB
++        # and the first decode request would fall back to torch.empty
++        # for every layer/forward.
++        self._reserve_decode_workspace(vllm_config)
++
++    def _reserve_decode_workspace(self, vllm_config) -> None:
++        if not is_workspace_manager_initialized():
++            return
++        manager = current_workspace_manager()
++        if manager.is_locked():
++            return
++        scheduler_config = vllm_config.scheduler_config
++        speculative_config = vllm_config.speculative_config
++        extra_spec_tokens = (
++            speculative_config.num_speculative_tokens
++            if speculative_config is not None
++            else 0
++        )
++        max_batch_tokens = scheduler_config.max_num_seqs * (1 + extra_spec_tokens)
++        query_dtype = vllm_config.model_config.dtype
++        # Reserve across every ubatch slot so DBO setups don't get caught
++        # with sibling ubatches locked at 0 bytes.
++        manager.reserve(
++            (
++                (
++                    max_batch_tokens,
++                    self.num_heads,
++                    self.max_num_kv_splits,
++                    self.head_size + 1,
++                ),
++                torch.float32,
++            ),
++            ((max_batch_tokens, self.num_heads, self.head_size), query_dtype),
++            ((max_batch_tokens, self.num_heads), torch.float32),
++        )
++
+     def _flash_attn_varlen(
+         self,
+         q: torch.Tensor,
+@@ -867,21 +907,29 @@ def _decode_attention(
+     ) -> torch.Tensor:
+         # Acquire shared decode scratch buffers from WorkspaceManager.
+         # Layers execute sequentially so one set of buffers is sufficient.
+-        # Falls back to kernel-internal allocation if workspace unavailable.
++        # output_buf in query dtype — matches the in-kernel fp16 cast in stage2.
+         B = query.shape[0]
+         D = self.head_size
+         S = self.max_num_kv_splits
+         Hq = self.num_heads
+         mid_o_buf = output_buf = lse_buf = None
+         if is_workspace_manager_initialized():
+-            # output_buf in query dtype — matches the in-kernel fp16 cast in stage2.
+-            mid_o_buf, output_buf, lse_buf = (
+-                current_workspace_manager().get_simultaneous(
+-                    ((B, Hq, S, D + 1), torch.float32),
+-                    ((B, Hq, D), query.dtype),
+-                    ((B, Hq), torch.float32),
+-                )
++            bufs = current_workspace_manager().try_get_simultaneous(
++                ((B, Hq, S, D + 1), torch.float32),
++                ((B, Hq, D), query.dtype),
++                ((B, Hq), torch.float32),
++            )
++            if bufs is not None:
++                mid_o_buf, output_buf, lse_buf = bufs
++            # else: workspace is locked at a size that cannot fit this decode
++            # shape (e.g. warmup never landed a decode pass on a TQ layer).
++            # Fall through to kernel-internal allocation via torch.empty.
++        if mid_o_buf is None:
++            mid_o_buf = torch.empty(
++                (B, Hq, S, D + 1), dtype=torch.float32, device=query.device
+             )
++            output_buf = torch.empty((B, Hq, D), dtype=query.dtype, device=query.device)
++            lse_buf = torch.empty((B, Hq), dtype=torch.float32, device=query.device)
+ 
+         result = triton_turboquant_decode_attention(
+             query=query,
+diff --git a/vllm/v1/worker/workspace.py b/vllm/v1/worker/workspace.py
+index 1c502bfd8ff1..ada00dbde7cf 100644
+--- a/vllm/v1/worker/workspace.py
++++ b/vllm/v1/worker/workspace.py
+@@ -100,32 +100,90 @@ def get_simultaneous(
+         Returns:
+             List of tensor views into the workspace buffer, one per shape/dtype pair.
+         """
++        actual_bytes, offsets, total_bytes = self._compute_layout(shapes_and_dtypes)
++        workspace = self._ensure_workspace_size(total_bytes)
++        return self._slice(workspace, shapes_and_dtypes, actual_bytes, offsets)
++
++    def try_get_simultaneous(
++        self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]
++    ) -> list[torch.Tensor] | None:
++        """Like get_simultaneous, but return None when growth would be needed
++        on a locked workspace instead of raising.
++
++        Callers use this when they have a correct (slower) fallback path and
++        want to opportunistically use pre-allocated workspace whenever it
++        already fits. A locked workspace that is already large enough is
++        still returned normally — only the locked-and-undersized case yields
++        None.
++        """
++        actual_bytes, offsets, total_bytes = self._compute_layout(shapes_and_dtypes)
++        if self._locked:
++            ubatch_id = dbo_current_ubatch_id()
++            current = self._current_workspaces[ubatch_id]
++            if self._workspace_size_bytes(current) < total_bytes:
++                return None
++            return self._slice(current, shapes_and_dtypes, actual_bytes, offsets)
++        workspace = self._ensure_workspace_size(total_bytes)
++        return self._slice(workspace, shapes_and_dtypes, actual_bytes, offsets)
++
++    def reserve(self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]) -> None:
++        """Pre-allocate workspace large enough for these shapes on every
++        ubatch slot.
++
++        Use this at init time (before `lock_workspace()`) so the lock
++        snapshots a workspace large enough for steady-state use on every
++        ubatch — not just the one whose forward happens to be active
++        during reservation. Safe to call repeatedly; idempotent.
++
++        Distinct from `get_simultaneous` which only grows the current
++        ubatch (to avoid orphaning sibling ubatches' outstanding views
++        mid-run).
++        """
++        total_bytes = self._compute_layout(shapes_and_dtypes)[2]
++        for ubatch_id in range(self._num_ubatches):
++            self._ensure_workspace_size(total_bytes, ubatch_id=ubatch_id)
++
++    @staticmethod
++    def _compute_layout(
++        shapes_and_dtypes: tuple[tuple[tuple[int, ...], torch.dtype], ...],
++    ) -> tuple[list[int], list[int], int]:
++        """Compute byte sizes, aligned offsets, and total bytes in one pass."""
+         actual_bytes = [_compute_bytes(s, d) for s, d in shapes_and_dtypes]
+         aligned_bytes = [round_up(actual, 256) for actual in actual_bytes]
+-        total_bytes = sum(aligned_bytes)
+-
+-        # Calculate cumulative offsets using itertools.accumulate
+         offsets = list(accumulate([0] + aligned_bytes[:-1]))
++        total_bytes = sum(aligned_bytes)
++        return actual_bytes, offsets, total_bytes
+ 
+-        current_workspace = self._ensure_workspace_size(total_bytes)
+-
++    @staticmethod
++    def _slice(
++        workspace: torch.Tensor,
++        shapes_and_dtypes: tuple[tuple[tuple[int, ...], torch.dtype], ...],
++        actual_bytes: list[int],
++        offsets: list[int],
++    ) -> list[torch.Tensor]:
+         return [
+-            current_workspace[offsets[i] : offsets[i] + actual_bytes[i]]
++            workspace[offsets[i] : offsets[i] + actual_bytes[i]]
+             .view(shapes_and_dtypes[i][1])
+             .reshape(shapes_and_dtypes[i][0])
+             for i in range(len(shapes_and_dtypes))
+         ]
+ 
+-    def _ensure_workspace_size(self, required_bytes: int) -> torch.Tensor:
+-        """Ensure workspace is allocated and large enough, return current workspace.
++    def _ensure_workspace_size(
++        self, required_bytes: int, ubatch_id: int | None = None
++    ) -> torch.Tensor:
++        """Ensure workspace is allocated and large enough, return that workspace.
+ 
+         Args:
+             required_bytes: The number of bytes required.
++            ubatch_id: Which ubatch slot to size. Defaults to the current
++                ubatch (`dbo_current_ubatch_id()`); pass an explicit id
++                from `reserve` to size sibling slots.
+ 
+         Returns:
+-            The current workspace tensor.
++            The workspace tensor for the selected ubatch.
+         """
+-        ubatch_id = dbo_current_ubatch_id()
++        if ubatch_id is None:
++            ubatch_id = dbo_current_ubatch_id()
+         current_workspace = self._current_workspaces[ubatch_id]
+         current_size = self._workspace_size_bytes(current_workspace)
+ 

@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-dev \
         curl \
         git \
+        patch \
         build-essential \
         && ln -sf /usr/bin/python3 /usr/bin/python \
         && apt-get clean \
@@ -43,6 +44,21 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages \
         auto-round \
         hf_transfer \
         huggingface_hub
+
+# Vendored upstream fix: PR vllm-project/vllm#42551 — TurboQuant decode
+# attention asserts on first inference for hybrid models (Qwen3.6) because
+# `lock_workspace()` runs at end of warmup before the decode path is exercised,
+# leaving the workspace locked at 0 MB. Bug: vllm-project/vllm#42544. The PR
+# applies cleanly against v0.21.0rc2 (134-line diff to 2 files). Drop this
+# step once a vllm release that includes #42551 is pinned.
+COPY patches/ /tmp/vllm-patches/
+RUN VLLM_DIR=$(python3 -c "import vllm,os;print(os.path.dirname(vllm.__path__[0]))") \
+    && cd "$VLLM_DIR" \
+    && for p in /tmp/vllm-patches/*.patch; do \
+            echo "applying $p"; \
+            patch -p1 --forward --reject-file=- < "$p"; \
+       done \
+    && rm -rf /tmp/vllm-patches
 
 RUN mkdir -p /data/models /data/logs
 
