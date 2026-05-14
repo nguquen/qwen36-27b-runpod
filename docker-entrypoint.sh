@@ -26,8 +26,15 @@ export TENSOR_PARALLEL
 # Single-GPU context ceiling depends on KV cache dtype: TurboQuant k8v4
 # packs to ~65 B/token (8-bit K, 4-bit V) vs fp8 ~85 B/token, so k8v4 fits
 # ~2x more context in the same KV pool. Mirror that in the clamp ceiling.
+#
+# k8v4 cap = 57344 (7 * 8192 = 56K). Real-hardware run on 1x4090 24 GB
+# with vllm 0.21.0rc2 + MTP spec-decode (3 draft tokens) + MAX_NUM_SEQS=3
+# at GPU_MEMORY_UTIL=0.95 showed vllm's KV planner computed an effective
+# max of 59136 tokens. 57344 leaves ~3% margin for block-allocation
+# variance across cold starts; still 75% more context than the fp8 32K
+# path, which is the whole point of TurboQuant. Override via MAX_MODEL_LEN.
 if [[ "${KV_CACHE_DTYPE:-fp8}" == "turboquant_k8v4" ]]; then
-    SINGLE_GPU_CTX_CAP=65536
+    SINGLE_GPU_CTX_CAP=57344
 else
     SINGLE_GPU_CTX_CAP=32768
 fi
