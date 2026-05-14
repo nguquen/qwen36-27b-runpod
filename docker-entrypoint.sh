@@ -25,28 +25,36 @@ export TENSOR_PARALLEL
 #
 # Single-GPU context ceiling depends on KV cache dtype. TurboQuant variants
 # (PR #39931, in vllm 0.21.0rc2+) compress KV beyond fp8's 2x; caps below
-# are derived from the per-variant compression ratio relative to the
-# real-hardware validated k8v4 baseline on 1x4090 24 GB.
+# are derived from the actual per-slot byte size in vllm's TurboQuant
+# config, anchored to the real-hardware k8v4 baseline.
 #
 # Calibration anchor: k8v4 at 57344 was validated on 1x4090 24 GB with vllm
 # 0.21.0rc2 + MTP spec-decode (3 draft tokens) + MAX_NUM_SEQS=3 +
 # GPU_MEMORY_UTIL=0.95. vllm's KV planner reported 59136 as the absolute
 # ceiling; 57344 (7*8192) leaves ~3% margin for block-alloc variance.
 #
-# Other variants extrapolated by compression ratio (vs fp16 baseline),
-# rounded down to multiples of 8192 with extra safety margin because
-# (a) we haven't validated them on real hardware yet, (b) 4-bit and below
-# variants add per-block metadata (scales, rotation hints) that the simple
-# ratio model doesn't capture, and (c) Lloyd-Max keys with norm-correction
-# may have slightly different runtime memory profile.
+# Other variants: math ceiling = 59136 * (k8v4_slot / variant_slot), then
+# rounded DOWN to a multiple of 8192 with ~15% safety margin (vs k8v4's
+# 3% — these are unvalidated on real hardware yet).
 #
-#     dtype                 compr.  theoretical  baked   PPL      notes
-#     ------------------    ------  -----------  ------  ------   --------
-#     fp8                   2.0x    32K          32768   0%       default
-#     turboquant_k8v4       2.6x    ~57K         57344   +1.17%   validated
-#     turboquant_4bit_nc    3.8x    ~84K         73728   +2.71%   est. 12%
-#     turboquant_k3v4_nc    3.5x    ~77K         65536   +10.63%  dominated
-#     turboquant_3bit_nc    4.9x    ~108K        81920   +20.59%  big PPL
+# Slot size from vllm config.py (TurboQuantConfig.key_packed_size +
+# value_packed_size) for Qwen3.6 head_dim=256:
+#   key   = ceil(head_dim * key_bits / 8) + 2   (FP8 keys: head_dim bytes)
+#   value = ceil(head_dim * value_bits / 8) + 4 (scale + zero, fp16 each)
+#
+#     dtype                bits  slot  ratio  math_max  baked   PPL
+#     ------------------   ----  ----  -----  --------  ------  -------
+#     fp8                  --    --    --     --        32768   0%
+#     turboquant_k8v4      8/4   388   1.00x   59136*   57344   +1.17%
+#     turboquant_4bit_nc   4/4   262   1.48x   87602    73728   +2.71%
+#     turboquant_k3v4_nc   3/4   230   1.69x   99762    81920   +10.63%
+#     turboquant_3bit_nc   3/3   198   1.96x  115892    98304   +20.59%
+#     (* k8v4 row is the real-hw planner ceiling, not extrapolated)
+#
+# NOTE: vllm 0.21.0rc2 docstring claims k3v4_nc compresses at ~3.5x, which
+# would put it below 4bit_nc (3.8x) and violate the bit ordering. The slot
+# math above gives 4.45x; the docstring number appears to be a typo (the
+# `~` prefix already flags it as approximate). We trust the slot math.
 #
 # Operator can override per-endpoint via MAX_MODEL_LEN env var.
 case "${KV_CACHE_DTYPE:-fp8}" in
@@ -57,10 +65,10 @@ case "${KV_CACHE_DTYPE:-fp8}" in
         SINGLE_GPU_CTX_CAP=73728
         ;;
     turboquant_k3v4_nc)
-        SINGLE_GPU_CTX_CAP=65536
+        SINGLE_GPU_CTX_CAP=81920
         ;;
     turboquant_3bit_nc)
-        SINGLE_GPU_CTX_CAP=81920
+        SINGLE_GPU_CTX_CAP=98304
         ;;
     *)
         SINGLE_GPU_CTX_CAP=32768
